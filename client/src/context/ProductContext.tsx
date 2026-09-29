@@ -3,11 +3,12 @@ import { Product, products as defaultProducts } from "@/lib/products";
 
 interface ProductContextType {
   products: Product[];
-  addProduct: (product: Omit<Product, "id">) => number;
+  addProduct: (product: Omit<Product, "id">) => Promise<number>;
   updateProduct: (id: number, product: Partial<Product>) => void;
   deleteProduct: (id: number) => void;
   getProduct: (id: number) => Product | undefined;
   refreshProducts: () => void;
+  skuExists: (sku: string) => boolean;
 }
 
 const ProductContext = createContext<ProductContextType | undefined>(undefined);
@@ -45,26 +46,55 @@ export function ProductProvider({ children }: { children: React.ReactNode }) {
     }
   }, [products]);
 
-  const addProduct = (product: Omit<Product, "id">) => {
-    const newId = Math.max(...products.map(p => p.id), 0) + 1;
-    const newProduct: Product = {
-      ...product,
-      id: newId,
-    };
-    setProducts(prev => [...prev, newProduct]);
-    return newId;
+  const addProduct = async (product: Omit<Product, "id">): Promise<number> => {
+    return new Promise((resolve, reject) => {
+      try {
+        // Check if SKU already exists
+        if (product.sku && products.some(p => p.sku === product.sku)) {
+          reject(new Error("A product with this SKU already exists"));
+          return;
+        }
+
+        const newId = Math.max(...products.map(p => p.id), 0) + 1;
+        const newProduct: Product = {
+          ...product,
+          id: newId,
+        };
+
+        setProducts(prev => {
+          const updated = [...prev, newProduct];
+          // Force immediate localStorage save
+          localStorage.setItem("krishna-products", JSON.stringify(updated));
+          return updated;
+        });
+
+        // Resolve immediately with the new ID
+        resolve(newId);
+      } catch (error) {
+        console.error("Error adding product:", error);
+        reject(error);
+      }
+    });
   };
 
   const updateProduct = (id: number, updates: Partial<Product>) => {
-    setProducts(prev =>
-      prev.map(product =>
+    setProducts(prev => {
+      const updated = prev.map(product =>
         product.id === id ? { ...product, ...updates } : product
-      )
-    );
+      );
+      // Force immediate localStorage save
+      localStorage.setItem("krishna-products", JSON.stringify(updated));
+      return updated;
+    });
   };
 
   const deleteProduct = (id: number) => {
-    setProducts(prev => prev.filter(product => product.id !== id));
+    setProducts(prev => {
+      const updated = prev.filter(product => product.id !== id);
+      // Force immediate localStorage save
+      localStorage.setItem("krishna-products", JSON.stringify(updated));
+      return updated;
+    });
   };
 
   const getProduct = (id: number): Product | undefined => {
@@ -83,6 +113,10 @@ export function ProductProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
+  const skuExists = (sku: string): boolean => {
+    return products.some(p => p.sku === sku);
+  };
+
   return (
     <ProductContext.Provider
       value={{
@@ -92,6 +126,7 @@ export function ProductProvider({ children }: { children: React.ReactNode }) {
         deleteProduct,
         getProduct,
         refreshProducts,
+        skuExists,
       }}
     >
       {children}

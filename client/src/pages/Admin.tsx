@@ -17,7 +17,7 @@ import { formatINR } from "@/lib/currency";
 
 export default function AdminInventory() {
   const { importFromExcel, exportToExcel, updateStock, getStock } = useInventory();
-  const { products, addProduct, updateProduct, deleteProduct } = useProducts();
+  const { products, addProduct, updateProduct, deleteProduct, skuExists } = useProducts();
   const [, setLocation] = useLocation();
   const [uploadStatus, setUploadStatus] = useState<"idle" | "success" | "error">("idle");
   const [uploadMessage, setUploadMessage] = useState("");
@@ -47,6 +47,12 @@ export default function AdminInventory() {
     warranty: "",
     delivery: ""
   });
+  
+  // Image handling state
+  const [imageInputUrl, setImageInputUrl] = useState("");
+  const [imagePreview, setImagePreview] = useState("");
+  const [imageLoading, setImageLoading] = useState(false);
+  const [imageError, setImageError] = useState("");
   
   const categories = ["Mobiles", "Laptops", "Televisions", "Refrigerators", "Air Conditioners", "Washing Machines", "Headphones", "Cameras", "Accessories", "Mixer Grinder", "Irons", "Chimney", "Gas Stoves"];
   const brands = ["Samsung", "LG", "Sony", "Apple", "OnePlus", "Xiaomi", "Realme", "Motorola", "OPPO", "HP", "Dell", "Lenovo", "ASUS", "Acer", "MSI", "Microsoft", "JBL", "Bose", "Logitech"];
@@ -93,40 +99,75 @@ export default function AdminInventory() {
     reader.readAsBinaryString(file);
   };
 
-  const handleApplyChanges = () => {
+  const handleApplyChanges = async () => {
     if (uploadedData.length > 0) {
-      // First update inventory
-      importFromExcel(uploadedData);
-      
-      // Then update products based on Excel data
-      uploadedData.forEach((row) => {
-        const productId = parseInt(row["Product ID"]);
-        const existingProduct = products.find(p => p.id === productId);
+      try {
+        // First update inventory
+        importFromExcel(uploadedData);
         
-        if (existingProduct) {
-          // Update existing product with new data
-          const updates: any = {};
-          if (row["Product Name"]) updates.name = row["Product Name"];
-          if (row["Brand"]) updates.brand = row["Brand"];
-          if (row["Category"]) updates.category = row["Category"];
-          if (row["Price"]) updates.price = parseFloat(row["Price"]);
-          if (row["Original Price"]) updates.originalPrice = parseFloat(row["Original Price"]);
-          if (row["Color"]) updates.color = row["Color"];
-          if (row["RAM"]) updates.ram = row["RAM"];
-          if (row["Storage"]) updates.storage = row["Storage"];
-          if (row["Image"]) updates.image = row["Image"];
-          if (row["Description"]) updates.description = row["Description"];
+        // Then update products based on Excel data
+        for (const row of uploadedData) {
+          const productId = parseInt(row["Product ID"]);
+          const existingProduct = products.find(p => p.id === productId);
           
-          if (Object.keys(updates).length > 0) {
-            updateProduct(productId, updates);
+          if (existingProduct) {
+            // Update existing product with new data
+            const updates: any = {};
+            if (row["Product Name"]) updates.name = row["Product Name"];
+            if (row["Brand"]) updates.brand = row["Brand"];
+            if (row["Category"]) updates.category = row["Category"];
+            if (row["Price"]) updates.price = parseFloat(row["Price"]);
+            if (row["Original Price"]) updates.originalPrice = parseFloat(row["Original Price"]);
+            if (row["Color"]) updates.color = row["Color"];
+            if (row["RAM"]) updates.ram = row["RAM"];
+            if (row["Storage"]) updates.storage = row["Storage"];
+            if (row["Image"]) updates.image = row["Image"];
+            if (row["Description"]) updates.description = row["Description"];
+            
+            if (Object.keys(updates).length > 0) {
+              updateProduct(productId, updates);
+            }
+          } else if (row["Product Name"] && row["Price"] && !isNaN(productId)) {
+            // Create new product if it doesn't exist
+            const stock = parseInt(row["Stock Quantity"]) || 0;
+            const newProduct = {
+              name: row["Product Name"],
+              brand: row["Brand"] || "Generic",
+              category: row["Category"] || "Accessories",
+              price: parseFloat(row["Price"]),
+              originalPrice: row["Original Price"] ? parseFloat(row["Original Price"]) : undefined,
+              sku: row["SKU"] || `KE-${row["Category"]?.substring(0, 3).toUpperCase() || "ACC"}-${Date.now()}`,
+              image: row["Image"] || "/assets/generated_images/home_appliances_category_image.png",
+              color: row["Color"] || undefined,
+              ram: row["RAM"] || undefined,
+              storage: row["Storage"] || undefined,
+              description: row["Description"] || `${row["Product Name"]} with dependable performance, modern features, and GST-inclusive pricing from Krishna Electronics.`,
+              rating: 4.0,
+              reviews: 0,
+              specs: {
+                Brand: row["Brand"] || "Generic",
+                Category: row["Category"] || "Accessories",
+                Warranty: row["Warranty"] || "1 year brand warranty",
+                Delivery: row["Delivery"] || "Free delivery across India"
+              },
+              status: (stock > 0 ? "available" : "out_of_stock") as "available" | "out_of_stock",
+              stock: 0
+            };
+
+            const newProductId = await addProduct(newProduct);
+            updateStock(newProductId, stock);
           }
         }
-      });
-      
-      setUploadStatus("success");
-      setUploadMessage(`Successfully updated inventory and products for ${uploadedData.length} records.`);
-      setShowPreview(false);
-      setUploadedData([]);
+        
+        setUploadStatus("success");
+        setUploadMessage(`Successfully updated inventory and products for ${uploadedData.length} records.`);
+        setShowPreview(false);
+        setUploadedData([]);
+      } catch (error) {
+        console.error("Error applying Excel changes:", error);
+        setUploadStatus("error");
+        setUploadMessage("Error applying changes. Please check the data and try again.");
+      }
     }
   };
 
@@ -200,7 +241,7 @@ export default function AdminInventory() {
   };
 
   // Product Management Functions
-  const handleAddProduct = () => {
+  const handleAddProduct = async () => {
     // Validate required fields
     if (!productFormData.name || !productFormData.brand || !productFormData.category || 
         !productFormData.price || !productFormData.stock) {
@@ -227,6 +268,13 @@ export default function AdminInventory() {
 
     // Generate SKU if not provided
     const sku = productFormData.sku || `KE-${productFormData.category.substring(0, 3).toUpperCase()}-${Date.now()}`;
+
+    // Check if SKU already exists
+    if (skuExists(sku)) {
+      setUploadStatus("error");
+      setUploadMessage("A product with this SKU already exists. Please use a different SKU.");
+      return;
+    }
 
     // Use default image if not provided
     const image = productFormData.image || "/assets/generated_images/home_appliances_category_image.png";
@@ -255,13 +303,28 @@ export default function AdminInventory() {
       stock: 0 // Will be updated by inventory system
     };
 
-    const newProductId = addProduct(newProduct);
-    updateStock(newProductId, stock);
-    
-    setUploadStatus("success");
-    setUploadMessage(`Product "${productFormData.name}" added successfully`);
-    setShowAddProductModal(false);
-    resetProductForm();
+    try {
+      setUploadStatus("idle");
+      setUploadMessage("Adding product...");
+      
+      const newProductId = await addProduct(newProduct);
+      
+      // Small delay to ensure product is fully saved before updating stock
+      setTimeout(() => {
+        updateStock(newProductId, stock);
+      }, 50);
+      
+      setUploadStatus("success");
+      setUploadMessage(`Product "${productFormData.name}" added successfully`);
+      setShowAddProductModal(false);
+      resetProductForm();
+      resetImageState();
+    } catch (error) {
+      console.error("Error adding product:", error);
+      setUploadStatus("error");
+      setUploadMessage(error instanceof Error ? error.message : "Unable to add product. Please check the product information and try again.");
+      // Don't close the modal on error
+    }
   };
 
   const handleEditProduct = (product: any) => {
@@ -282,6 +345,9 @@ export default function AdminInventory() {
       warranty: product.specs?.Warranty || "",
       delivery: product.specs?.Delivery || ""
     });
+    setImageInputUrl(product.image || "");
+    setImagePreview(product.image || "");
+    setImageError("");
     setShowEditProductModal(true);
   };
 
@@ -341,6 +407,7 @@ export default function AdminInventory() {
     setShowEditProductModal(false);
     setSelectedProduct(null);
     resetProductForm();
+    resetImageState();
   };
 
   const handleDeleteProduct = (product: any) => {
@@ -381,6 +448,69 @@ export default function AdminInventory() {
     if (stock === 0) return { text: "OUT OF STOCK", color: "bg-red-100 text-red-700" };
     if (stock <= 5) return { text: "LOW STOCK", color: "bg-yellow-100 text-yellow-700" };
     return { text: "IN STOCK", color: "bg-green-100 text-green-700" };
+  };
+
+  // Image handling functions
+  const handleImageUrlSubmit = async () => {
+    if (!imageInputUrl.trim()) {
+      setImageError("Please enter a URL");
+      return;
+    }
+
+    setImageLoading(true);
+    setImageError("");
+    setImagePreview("");
+
+    try {
+      const response = await fetch(`/api/fetch-product-image?url=${encodeURIComponent(imageInputUrl)}`);
+      const data = await response.json();
+
+      if (response.ok && data.imageUrl) {
+        setImagePreview(data.imageUrl);
+        setProductFormData(prev => ({ ...prev, image: data.imageUrl }));
+      } else {
+        setImageError(data.error || "Failed to fetch image. Please try a direct image URL.");
+      }
+    } catch (error) {
+      console.error("Error fetching image:", error);
+      setImageError("Failed to fetch image. Please try a direct image URL.");
+    } finally {
+      setImageLoading(false);
+    }
+  };
+
+  const handleUseImage = () => {
+    if (imagePreview) {
+      setProductFormData(prev => ({ ...prev, image: imagePreview }));
+      setImageInputUrl("");
+      setImageError("");
+    }
+  };
+
+  const handleImageInputChange = (value: string) => {
+    setImageInputUrl(value);
+    setImageError("");
+    
+    // If it looks like a direct image URL, try to preview it immediately
+    if (isDirectImageUrl(value)) {
+      setImagePreview(value);
+      setProductFormData(prev => ({ ...prev, image: value }));
+    } else {
+      setImagePreview("");
+    }
+  };
+
+  const isDirectImageUrl = (url: string): boolean => {
+    const imageExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg', '.bmp'];
+    const lowerUrl = url.toLowerCase();
+    return imageExtensions.some(ext => lowerUrl.includes(ext));
+  };
+
+  const resetImageState = () => {
+    setImageInputUrl("");
+    setImagePreview("");
+    setImageError("");
+    setImageLoading(false);
   };
 
   const filteredProducts = products.filter(product => 
@@ -750,13 +880,60 @@ export default function AdminInventory() {
                         />
                       </div>
                       <div>
-                        <Label htmlFor="product-image">Image URL</Label>
-                        <Input
-                          id="product-image"
-                          value={productFormData.image}
-                          onChange={(e) => setProductFormData({...productFormData, image: e.target.value})}
-                          placeholder="Enter image URL"
-                        />
+                        <Label htmlFor="product-image">Product Image / Product Page URL</Label>
+                        <div className="space-y-2">
+                          <div className="flex gap-2">
+                            <Input
+                              id="product-image"
+                              value={imageInputUrl}
+                              onChange={(e) => handleImageInputChange(e.target.value)}
+                              placeholder="Paste product page URL or direct image URL"
+                              className="flex-1"
+                            />
+                            <Button 
+                              onClick={handleImageUrlSubmit} 
+                              disabled={imageLoading}
+                              size="sm"
+                            >
+                              {imageLoading ? "Loading..." : "Fetch"}
+                            </Button>
+                          </div>
+                          
+                          {imageError && (
+                            <div className="text-sm text-red-600 bg-red-50 p-2 rounded">
+                              {imageError}
+                            </div>
+                          )}
+                          
+                          {imagePreview && (
+                            <div className="border rounded p-3 space-y-2">
+                              <div className="text-sm font-medium">Image Preview:</div>
+                              <img 
+                                src={imagePreview} 
+                                alt="Product preview" 
+                                className="w-32 h-32 object-contain rounded"
+                                onError={() => setImageError("Failed to load image preview")}
+                              />
+                              <Button 
+                                onClick={handleUseImage}
+                                size="sm"
+                                className="w-full"
+                              >
+                                Use This Image
+                              </Button>
+                            </div>
+                          )}
+                          
+                          <div className="text-xs text-gray-500 space-y-1">
+                            <div>Option 1: Paste product page URL (auto-extract image)</div>
+                            <div>Option 2: Paste direct image URL</div>
+                            <div>Option 3: Leave empty to use default image</div>
+                          </div>
+                          
+                          <div className="text-xs text-gray-500">
+                            Current image: {productFormData.image || "None"}
+                          </div>
+                        </div>
                       </div>
                     </div>
                     <div className="grid grid-cols-3 gap-4">
@@ -820,7 +997,7 @@ export default function AdminInventory() {
                     </div>
                   </div>
                   <DialogFooter>
-                    <Button variant="outline" onClick={() => {setShowAddProductModal(false); resetProductForm();}}>Cancel</Button>
+                    <Button variant="outline" onClick={() => {setShowAddProductModal(false); resetProductForm(); resetImageState();}}>Cancel</Button>
                     <Button onClick={handleAddProduct} className="bg-green-600 hover:bg-green-700">Add Product</Button>
                   </DialogFooter>
                 </DialogContent>
@@ -998,13 +1175,56 @@ export default function AdminInventory() {
                   />
                 </div>
                 <div>
-                  <Label htmlFor="edit-product-image">Image URL</Label>
-                  <Input
-                    id="edit-product-image"
-                    value={productFormData.image}
-                    onChange={(e) => setProductFormData({...productFormData, image: e.target.value})}
-                    placeholder="Enter image URL"
-                  />
+                  <Label htmlFor="edit-product-image">Product Image / Product Page URL</Label>
+                  <div className="space-y-2">
+                    <div className="flex gap-2">
+                      <Input
+                        id="edit-product-image"
+                        value={imageInputUrl}
+                        onChange={(e) => handleImageInputChange(e.target.value)}
+                        placeholder="Paste product page URL or direct image URL"
+                        className="flex-1"
+                      />
+                      <Button 
+                        onClick={handleImageUrlSubmit} 
+                        disabled={imageLoading}
+                        size="sm"
+                      >
+                        {imageLoading ? "Loading..." : "Fetch"}
+                      </Button>
+                    </div>
+                    
+                    {imageError && (
+                      <div className="text-sm text-red-600 bg-red-50 p-2 rounded">
+                        {imageError}
+                      </div>
+                    )}
+                    
+                    {imagePreview && (
+                      <div className="border rounded p-3 space-y-2">
+                        <div className="text-sm font-medium">Image Preview:</div>
+                        <img 
+                          src={imagePreview} 
+                          alt="Product preview" 
+                          className="w-32 h-32 object-contain rounded"
+                          onError={() => setImageError("Failed to load image preview")}
+                        />
+                        <Button 
+                          onClick={handleUseImage}
+                          size="sm"
+                          className="w-full"
+                        >
+                          Use This Image
+                        </Button>
+                      </div>
+                    )}
+                    
+                    <div className="text-xs text-gray-500 space-y-1">
+                      <div>Option 1: Paste product page URL (auto-extract image)</div>
+                      <div>Option 2: Paste direct image URL</div>
+                      <div>Option 3: Leave empty to use default image</div>
+                    </div>
+                  </div>
                 </div>
               </div>
               <div className="grid grid-cols-3 gap-4">
@@ -1068,7 +1288,7 @@ export default function AdminInventory() {
               </div>
             </div>
             <DialogFooter>
-              <Button variant="outline" onClick={() => {setShowEditProductModal(false); setSelectedProduct(null); resetProductForm();}}>Cancel</Button>
+              <Button variant="outline" onClick={() => {setShowEditProductModal(false); setSelectedProduct(null); resetProductForm(); resetImageState();}}>Cancel</Button>
               <Button onClick={handleUpdateProduct} className="bg-blue-600 hover:bg-blue-700">Save Changes</Button>
             </DialogFooter>
           </DialogContent>
